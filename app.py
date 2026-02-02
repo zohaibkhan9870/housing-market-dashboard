@@ -179,3 +179,4 @@ st.markdown("""
 - **Black line**: Typical Tampa home price (inflation-adjusted)
 - **Green background**: Supportive market conditions
 - **Yellow background**: Mi
+""")
