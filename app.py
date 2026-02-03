@@ -114,8 +114,8 @@ predictors = [
     "value_52w_change"
 ]
 
-START = 260
 STEP = 52
+START = max(104, int(price_data.shape[0] * 0.5))
 
 def predict_proba(train, test):
     rf = RandomForestClassifier(
