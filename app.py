@@ -9,7 +9,27 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from datetime import datetime, timedelta
 from sklearn.ensemble import RandomForestClassifier
-from pandas_datareader import data as pdr
+@st.cache_data
+def load_fred():
+    def fred(series):
+        url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series}"
+        df = pd.read_csv(url)
+        df["DATE"] = pd.to_datetime(df["DATE"])
+        df.set_index("DATE", inplace=True)
+        df.replace(".", np.nan, inplace=True)
+        return df.astype(float)
+
+    mortgage = fred("MORTGAGE30US")
+    vacancy = fred("RRVRUSQ156N")
+    cpi = fred("CPIAUCSL")
+
+    fed = mortgage.join(vacancy, how="outer").join(cpi, how="outer")
+    fed.columns = ["interest", "vacancy", "cpi"]
+    fed = fed.ffill().dropna()
+
+    fed.index = fed.index + pd.Timedelta(days=2)
+    return fed
+
 
 # ------------------------------------------------------------
 # PAGE CONFIG
