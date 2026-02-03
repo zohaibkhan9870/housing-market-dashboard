@@ -1,14 +1,30 @@
 # ============================================================
-# TAMPA HOUSING MARKET RISK DASHBOARD (STREAMLIT APP)
+# TAMPA HOUSING MARKET RISK DASHBOARD (STREAMLIT CLOUD SAFE)
 # ============================================================
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Patch
-from datetime import datetime, timedelta
 from sklearn.ensemble import RandomForestClassifier
+
+# ------------------------------------------------------------
+# PAGE CONFIG
+# ------------------------------------------------------------
+st.set_page_config(
+    page_title="Tampa Housing Market Risk Dashboard",
+    layout="centered"
+)
+
+st.title("🏠 Tampa Housing Market Risk Dashboard")
+st.write(
+    "This dashboard shows a **weekly housing market signal for Tampa, Florida**, "
+    "designed for real estate investors and housing professionals."
+)
+
+# ------------------------------------------------------------
+# LOAD FRED DATA (NO pandas_datareader)
+# ------------------------------------------------------------
 @st.cache_data
 def load_fred():
     def fred(series):
@@ -27,31 +43,13 @@ def load_fred():
     fed.columns = ["interest", "vacancy", "cpi"]
     fed = fed.ffill().dropna()
 
+    # Align weekly timing
     fed.index = fed.index + pd.Timedelta(days=2)
     return fed
 
 
 # ------------------------------------------------------------
-# PAGE CONFIG
-# ------------------------------------------------------------
-st.set_page_config(
-    page_title="Tampa Housing Market Risk Dashboard",
-    layout="centered"
-)
-
-st.title("🏠 Tampa Housing Market Risk Dashboard")
-st.markdown(
-    "This dashboard shows a **weekly housing market signal for Tampa, Florida**, "
-    "designed for real estate investors and housing professionals."
-)
-
-# ------------------------------------------------------------
-# USER SETTINGS
-# ------------------------------------------------------------
-TARGET_METRO = "Tampa"
-
-# ------------------------------------------------------------
-# LOAD ZILLOW DATA (FILES MUST EXIST IN GITHUB REPO)
+# LOAD ZILLOW DATA (FILES MUST EXIST IN REPO)
 # ------------------------------------------------------------
 @st.cache_data
 def load_zillow():
@@ -63,11 +61,15 @@ def load_zillow():
     )
     return price, value
 
-zillow_price, zillow_value = load_zillow()
 
 # ------------------------------------------------------------
-# SELECT TAMPA METRO
+# LOAD DATA
 # ------------------------------------------------------------
+fed_data = load_fred()
+zillow_price, zillow_value = load_zillow()
+
+TARGET_METRO = "Tampa"
+
 price_matches = zillow_price[
     zillow_price["RegionName"].str.contains(TARGET_METRO, case=False, na=False)
 ]
@@ -79,34 +81,11 @@ if price_matches.empty or value_matches.empty:
     st.error("Tampa metro not found in Zillow files.")
     st.stop()
 
-metro_name = price_matches["RegionName"].values[0]
-
 price = pd.DataFrame(price_matches.iloc[0, 5:])
 value = pd.DataFrame(value_matches.iloc[0, 5:])
 
 # ------------------------------------------------------------
-# LOAD FRED DATA (AUTO)
-# ------------------------------------------------------------
-@st.cache_data
-def load_fred():
-    start = "1950-01-01"
-    end = datetime.today()
-
-    fed = pd.concat([
-        pdr.DataReader("MORTGAGE30US", "fred", start, end),
-        pdr.DataReader("RRVRUSQ156N", "fred", start, end),
-        pdr.DataReader("CPIAUCSL", "fred", start, end),
-    ], axis=1)
-
-    fed.columns = ["interest", "vacancy", "cpi"]
-    fed = fed.sort_index().ffill().dropna()
-    fed.index = fed.index + timedelta(days=2)
-    return fed
-
-fed_data = load_fred()
-
-# ------------------------------------------------------------
-# PREPARE PRICE DATA
+# PREPARE DATA
 # ------------------------------------------------------------
 price.index = pd.to_datetime(price.index)
 value.index = pd.to_datetime(value.index)
@@ -116,14 +95,10 @@ value["month"] = value.index.to_period("M")
 
 price_data = price.merge(value, on="month")
 price_data.index = price.index
-price_data.drop(columns=["month"], inplace=True)
 price_data.columns = ["price", "value"]
+price_data.drop(columns=["month"], inplace=True)
 
-price_data = fed_data.merge(
-    price_data,
-    left_index=True,
-    right_index=True
-)
+price_data = fed_data.merge(price_data, left_index=True, right_index=True)
 
 # ------------------------------------------------------------
 # FEATURE ENGINEERING
@@ -142,40 +117,34 @@ price_data["value_52w_change"] = price_data["adj_value"].pct_change(52)
 price_data.dropna(inplace=True)
 
 # ------------------------------------------------------------
-# WALK-FORWARD MODEL (SAFE FOR METROS)
+# WALK-FORWARD MODEL
 # ------------------------------------------------------------
 predictors = [
     "adj_price",
     "adj_value",
     "interest",
     "price_13w_change",
-    "value_52w_change"
+    "value_52w_change",
 ]
 
-target = "change"
-
+START = 260
 STEP = 52
-START = max(104, int(len(price_data) * 0.5))
 
 def predict_proba(train, test):
     rf = RandomForestClassifier(
         min_samples_split=10,
         random_state=1
     )
-    rf.fit(train[predictors], train[target])
+    rf.fit(train[predictors], train["change"])
     return rf.predict_proba(test[predictors])[:, 1]
 
 all_probs = []
 
-for i in range(START, price_data.shape[0], STEP):
+for i in range(START, len(price_data), STEP):
     train = price_data.iloc[:i]
-    test = price_data.iloc[i:i+STEP]
+    test = price_data.iloc[i:i + STEP]
     if len(test) > 0:
         all_probs.append(predict_proba(train, test))
-
-if len(all_probs) == 0:
-    st.error("Not enough historical data to generate signals for Tampa.")
-    st.stop()
 
 probs = np.concatenate(all_probs)
 
@@ -183,7 +152,7 @@ prob_data = price_data.iloc[START:].copy()
 prob_data["prob_up"] = probs
 
 # ------------------------------------------------------------
-# REGIME LABELS
+# REGIME LABEL
 # ------------------------------------------------------------
 def label_regime(p):
     if p > 0.65:
@@ -195,42 +164,32 @@ def label_regime(p):
 
 prob_data["regime"] = prob_data["prob_up"].apply(label_regime)
 
-latest = prob_data.tail(1)
-prev = prob_data.tail(2).head(1)
-
-current_regime = latest["regime"].values[0]
-current_prob = latest["prob_up"].values[0]
-
 # ------------------------------------------------------------
-# DASHBOARD — CURRENT SIGNAL
+# CURRENT SIGNAL
 # ------------------------------------------------------------
+latest = prob_data.iloc[-1]
+prev = prob_data.iloc[-2]
+
 st.subheader("📍 Current Market Environment")
-st.caption(f"Metro: {metro_name} | Updated: {latest.index[0].date()}")
 
-if current_regime == "Supportive Market":
-    st.success("🟢 Supportive Market\n\nConditions favor housing price stability or upside.")
-elif current_regime == "Mixed Signals":
-    st.warning("🟡 Mixed Signals\n\nMarket direction is unclear.")
-else:
-    st.error("🔴 High Risk / Caution\n\nDownside risk is elevated.")
+st.markdown(f"**Status:** {latest['regime']}")
+st.markdown(
+    f"**Updated:** {latest.name.date()} "
+)
 
-# ------------------------------------------------------------
-# WEEKLY CHANGE INDICATOR
-# ------------------------------------------------------------
-delta = current_prob - prev["prob_up"].values[0]
-
+delta = latest["prob_up"] - prev["prob_up"]
 st.metric(
-    "Weekly Outlook Change",
-    f"{current_prob:.1%}",
-    f"{delta:+.1%} vs last week"
+    "Weekly Signal Change",
+    f"{latest['prob_up']:.2f}",
+    f"{delta:+.2f}"
 )
 
 # ------------------------------------------------------------
 # PRICE + RISK CHART
 # ------------------------------------------------------------
-st.subheader("📈 Tampa Housing Price & Risk Signals")
+st.subheader("📈 Price Trend & Risk Signals")
 
-fig, ax = plt.subplots(figsize=(12,6))
+fig, ax = plt.subplots(figsize=(12, 5))
 
 ax.plot(
     prob_data.index,
@@ -242,48 +201,57 @@ ax.plot(
 
 for i in range(len(prob_data) - 1):
     r = prob_data["regime"].iloc[i]
-    if r == "Supportive Market":
-        c = "green"
-    elif r == "Mixed Signals":
-        c = "gold"
-    else:
-        c = "red"
-
+    color = (
+        "green" if r == "Supportive Market"
+        else "gold" if r == "Mixed Signals"
+        else "red"
+    )
     ax.axvspan(
         prob_data.index[i],
-        prob_data.index[i+1],
-        color=c,
+        prob_data.index[i + 1],
+        color=color,
         alpha=0.12
     )
 
-ax.set_title("Tampa Housing Market: Price Trend & Risk Signals")
-ax.set_ylabel("Typical Home Price (Inflation-Adjusted)")
-ax.set_xlabel("Date")
-
-legend_items = [
-    Patch(facecolor="green", alpha=0.25, label="Supportive Market"),
-    Patch(facecolor="gold", alpha=0.25, label="Mixed Signals"),
-    Patch(facecolor="red", alpha=0.25, label="High Risk / Caution")
-]
-
-ax.legend(
-    handles=[plt.Line2D([0], [0], color="black", lw=2,
-                        label="Real Home Price")] + legend_items,
-    loc="upper left"
-)
-
+ax.set_title("Tampa Housing Market: Price & Risk Signals")
+ax.set_ylabel("Inflation-Adjusted Home Price")
+ax.legend()
 st.pyplot(fig)
 
 # ------------------------------------------------------------
-# HOW TO READ
+# WEEKLY SIGNAL CHART (LAST 12 WEEKS)
 # ------------------------------------------------------------
-st.markdown("""
-### How to read this chart
-- **Black line:** Typical Tampa home prices adjusted for inflation  
-- **Green background:** Supportive market conditions  
-- **Yellow background:** Mixed or unclear signals  
-- **Red background:** Elevated downside risk  
+st.subheader("🕒 Weekly Housing Signal (Last 12 Weeks)")
 
-👉 Focus on **recent changes**, not old history.  
-This signal updates **weekly**.
-""")
+recent = prob_data.tail(12)
+
+fig2, ax2 = plt.subplots(figsize=(12, 5))
+
+ax2.plot(
+    recent.index,
+    recent["prob_up"],
+    marker="o",
+    linewidth=2.5,
+    color="black"
+)
+
+ax2.axhline(0.65, color="green", linestyle="--", alpha=0.6)
+ax2.axhline(0.45, color="red", linestyle="--", alpha=0.6)
+
+ax2.set_ylim(0, 1)
+ax2.set_ylabel("Market Confidence")
+ax2.set_title("Weekly Market Outlook")
+
+fig2.text(
+    0.5, -0.25,
+    "HOW TO READ THIS CHART\n"
+    "• Each dot shows the model’s weekly view of the housing market.\n"
+    "• Higher values = more supportive conditions for home prices.\n"
+    "• Green zone = supportive market.\n"
+    "• Red zone = elevated risk.\n"
+    "• Focus on recent direction.",
+    ha="center",
+    fontsize=10
+)
+
+st.pyplot(fig2)
